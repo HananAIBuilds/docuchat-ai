@@ -96,6 +96,7 @@ class RAGEngine:
         total = len(chunks)
         for i, chunk in enumerate(chunks):
             embeddings.append(self._embed_single(chunk))
+             time.sleep(0.5)
             if progress_callback:
                 progress_callback((i + 1) / total)
 
