@@ -2,7 +2,7 @@
 
 A Retrieval-Augmented Generation (RAG) app that lets you upload a document (`.txt`, `.pdf`, `.docx`, `.csv`, `.xlsx`) and ask questions about it in a chat interface. Answers are grounded strictly in the document's content, with the exact source chunks shown for every response.
 
-**🔗 Live demo:** [_add your Streamlit Cloud link here after deploying_](https://docuchat-ai-rag.streamlit.app/)
+**🔗 Live demo:** [docuchat-ai-rag.streamlit.app](https://docuchat-ai-rag.streamlit.app/)
 
 ---
 
@@ -48,7 +48,7 @@ flowchart LR
 ## 📁 Project Structure
 
 ```
-rag-file-qa/
+docuchat-ai/
 ├── app.py                          # Streamlit UI (entry point)
 ├── rag_engine.py                   # Core RAG logic: chunk / embed / index / retrieve / generate
 ├── file_loader.py                  # Text extraction for txt/pdf/docx/csv/xlsx
@@ -69,8 +69,8 @@ Separating the engine from the UI means the RAG logic can be reused in a CLI too
 **1. Clone and install dependencies**
 
 ```bash
-git clone https://github.com/<your-username>/rag-file-qa.git
-cd rag-file-qa
+git clone https://github.com/HananAIBuilds/docuchat-ai.git
+cd docuchat-ai
 python -m venv venv
 source venv/bin/activate      # Windows: venv\Scripts\activate
 pip install -r requirements.txt
