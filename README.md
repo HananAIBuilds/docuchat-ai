@@ -2,7 +2,7 @@
 
 A Retrieval-Augmented Generation (RAG) app that lets you upload a document (`.txt`, `.pdf`, `.docx`, `.csv`, `.xlsx`) and ask questions about it in a chat interface. Answers are grounded strictly in the document's content, with the exact source chunks shown for every response.
 
-**🔗 Live demo:** _add your Streamlit Cloud link here after deploying_
+**🔗 Live demo:** [_add your Streamlit Cloud link here after deploying_](https://docuchat-ai-rag.streamlit.app/)
 
 ---
 
