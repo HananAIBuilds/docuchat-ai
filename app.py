@@ -126,7 +126,7 @@ with st.sidebar:
 
     st.divider()
     st.caption("Built with Streamlit · FAISS · Google Gemini")
-    st.caption("[View source on GitHub](https://github.com/)")
+    st.caption("[View source on GitHub](https://github.com/HananAIBuilds/docuchat-ai/tree/main)")
 
 # --------------------------------------------------------------------- #
 # Main header
