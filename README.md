@@ -1,4 +1,4 @@
-# 📄 DocuChat AI — Retrieval-Augmented Q&A over Your Documents
+# 📄 DocuChat AI - Retrieval-Augmented Q&A over Your Documents
 
 A Retrieval-Augmented Generation (RAG) app that lets you upload a document (`.txt`, `.pdf`, `.docx`, `.csv`, `.xlsx`) and ask questions about it in a chat interface. Answers are grounded strictly in the document's content, with the exact source chunks shown for every response.
 
@@ -8,13 +8,14 @@ A Retrieval-Augmented Generation (RAG) app that lets you upload a document (`.tx
 
 ## ✨ Features
 
-- **Multi-format support** — plain text, PDF, Word, CSV, and Excel files
+- **Multi-format support** - plain text, PDF, Word, CSV, and Excel files
 - **Chat-style interface** with full conversation history
-- **Transparent retrieval** — every answer shows the exact chunks it was grounded in, with similarity distance
-- **Smart chunking** — tabular data (CSV/XLSX) uses larger, low-overlap chunks to keep rows intact; prose uses smaller, denser chunks for tighter semantic matches
-- **Session-level caching** — a document is embedded once per session; asking follow-up questions doesn't re-embed or re-pay for the same file
-- **Resilient embeddings** — automatic retry with backoff on transient API failures
-- **Clear failure states** — missing API key, unsupported file type, or empty document all produce readable errors instead of crashes
+- **Transparent retrieval** - every answer shows the exact chunks it was grounded in, with similarity distance
+- **Smart chunking** - tabular data (CSV/XLSX) uses larger, low-overlap chunks to keep rows intact; prose uses smaller, denser chunks for tighter semantic matches
+- **Session-level caching** - a document is embedded once per session; asking follow-up questions doesn't re-embed the same file
+- **Resilient embeddings** - automatic retry with backoff on transient API failures
+- **Two independent API quotas** - embeddings (HuggingFace) and generation (Gemini) run on separate services, so one running out of quota doesn't take the whole app down
+- **Clear failure states** - missing API keys, unsupported file type, or empty document all produce readable errors instead of crashes
 
 ---
 
@@ -24,9 +25,9 @@ A Retrieval-Augmented Generation (RAG) app that lets you upload a document (`.tx
 flowchart LR
     A[Upload File] --> B[Extract Text]
     B --> C[Chunk Text]
-    C --> D[Embed Chunks<br/>gemini-embedding-001]
+    C --> D[Embed Chunks<br/>all-MiniLM-L6-v2 · HuggingFace]
     D --> E[FAISS Vector Index]
-    F[User Question] --> G[Embed Question]
+    F[User Question] --> G[Embed Question<br/>HuggingFace]
     G --> H[Similarity Search<br/>top-k chunks]
     E --> H
     H --> I[Build Grounded Prompt]
@@ -36,12 +37,12 @@ flowchart LR
 
 **Pipeline stages:**
 
-1. **Ingestion** — `file_loader.py` extracts raw text from the uploaded file.
-2. **Chunking** — the text is split into overlapping windows (size depends on file type).
-3. **Embedding** — each chunk is converted into a dense vector via Gemini's embedding model.
-4. **Indexing** — vectors are stored in an in-memory FAISS `IndexFlatL2` store.
-5. **Retrieval** — the user's question is embedded and matched against the top-k closest chunks.
-6. **Generation** — Gemini's generation model answers using only the retrieved chunks as context.
+1. **Ingestion** - `file_loader.py` extracts raw text from the uploaded file.
+2. **Chunking** - the text is split into overlapping windows (size depends on file type).
+3. **Embedding** - each chunk is converted into a dense vector via a HuggingFace-hosted sentence-transformer.
+4. **Indexing** - vectors are stored in an in-memory FAISS `IndexFlatL2` store.
+5. **Retrieval** - the user's question is embedded and matched against the top-k closest chunks.
+6. **Generation** - Gemini's `gemini-2.5-flash` answers using only the retrieved chunks as context.
 
 ---
 
@@ -76,14 +77,16 @@ source venv/bin/activate      # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-**2. Add your API key**
+**2. Add your API keys**
 
 ```bash
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-# then edit .streamlit/secrets.toml and paste your Google API key
+# then edit .streamlit/secrets.toml and paste your keys
 ```
 
-Get a free key from [Google AI Studio](https://aistudio.google.com/apikey).
+You'll need two free-tier keys:
+- **Google API key** - [Google AI Studio](https://aistudio.google.com/apikey) (used for answer generation)
+- **HuggingFace token** - [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) (used for embeddings)
 
 **3. Run the app**
 
@@ -95,22 +98,28 @@ streamlit run app.py
 
 ## ☁️ Deploying to Streamlit Cloud
 
-1. Push this repo to GitHub (make sure `.streamlit/secrets.toml` is **not** committed — it's already in `.gitignore`).
+1. Push this repo to GitHub (make sure `.streamlit/secrets.toml` is **not** committed, it's already in `.gitignore`).
 2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app** → select your repo, branch, and `app.py` as the entry point.
 3. Under **Advanced settings → Secrets**, paste:
    ```toml
    GOOGLE_API_KEY = "your-google-api-key-here"
+   HF_TOKEN = "your-huggingface-token-here"
    ```
-4. Deploy. The app reads the key via `st.secrets`, so no code changes are needed between local and cloud environments.
+4. Deploy.
 
 ---
 
-## ⚠️ Known Limitations (read before demoing)
+## ⚠️ Design Decisions & Known Limitations
 
-- **Not built for counting/aggregation.** RAG retrieves only the top-k most relevant chunks — never the whole document. A question like *"how many rows have value X?"* will only reflect the rows inside the retrieved chunks, not the full dataset. This tool is best suited for *"find this specific fact"* questions, not full-dataset statistics.
-- **Processing time scales with file size.** Each chunk requires one embedding API call; very large documents take longer and cost more to process.
-- **In-memory index.** The FAISS index lives in the Streamlit session — it resets if the app restarts or the session ends. There's no persistent vector database (yet).
-- **Answer quality depends on retrieval quality.** If the top-k chunks don't contain the answer, the model is instructed to say so rather than guess — but retrieval isn't perfect.
+**Why embeddings run on HuggingFace instead of Gemini.** The first version used Gemini's own embedding model for both embeddings and generation, sharing a single API key and quota. In practice, embeddings burn through a quota far faster than generation does — every chunk of every uploaded document needs its own embedding call, on top of one more call per question asked. Once that shared quota was exhausted on the live deployment, the entire app stalled: no embeddings meant nothing to search, which meant no answers — even though the generation quota itself was untouched. Embeddings were moved to a HuggingFace-hosted sentence-transformer (`all-MiniLM-L6-v2`), which is free with its own separate rate limit. Now the two steps fail independently instead of one quota outage taking down the whole pipeline. Generation stays on Gemini's `gemini-2.5-flash`, since that was never the bottleneck.
+
+**Not built for counting/aggregation.** RAG retrieves only the top-k most relevant chunks — never the whole document. A question like *"how many rows have value X?"* will only reflect the rows inside the retrieved chunks, not the full dataset. This tool is best suited for *"find this specific fact"* questions, not full-dataset statistics.
+
+**Processing time scales with file size.** Each chunk requires one embedding call; very large documents take longer to process.
+
+**In-memory index.** The FAISS index lives in the Streamlit session, it resets if the app restarts or the session ends. There's no persistent vector database (yet).
+
+**Answer quality depends on retrieval quality.** If the top-k chunks don't contain the answer, the model is instructed to say so rather than guess — but retrieval isn't perfect.
 
 ---
 
@@ -119,7 +128,7 @@ streamlit run app.py
 | Layer | Tool |
 |---|---|
 | UI | Streamlit |
-| Embeddings | Google Gemini (`gemini-embedding-001`) |
+| Embeddings | HuggingFace `sentence-transformers/all-MiniLM-L6-v2` |
 | Generation | Google Gemini (`gemini-2.5-flash`) |
 | Vector search | FAISS (`IndexFlatL2`) |
 | File parsing | `pypdf`, `python-docx`, `openpyxl`, `csv` |
@@ -137,4 +146,4 @@ streamlit run app.py
 
 ## 📜 License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
