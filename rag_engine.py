@@ -5,13 +5,28 @@ Core Retrieval-Augmented Generation engine.
 
 Pipeline:
     1. Chunking      -> split raw text into overlapping windows
-    2. Embedding     -> Gemini embedding model, with retry-on-failure
+    2. Embedding     -> HuggingFace sentence-transformer, with retry-on-failure
     3. Indexing      -> FAISS flat L2 index (in-memory vector store)
     4. Retrieval     -> top-k nearest chunks for a query
     5. Generation    -> Gemini generation model, grounded on retrieved chunks
 
 This module has zero Streamlit imports on purpose — it can be reused in a
 CLI, a notebook, or a different UI framework without modification.
+
+Embedding provider note (read before touching the embedding step):
+This originally used Gemini's own embedding model (`gemini-embedding-001`)
+for both embeddings and generation, sharing one Google API key/quota. In
+production, embeddings burn through that quota far faster than generation
+does — every chunk of every uploaded document needs its own embedding call,
+on top of one more call per question asked. Once that quota was exhausted,
+the entire app stalled: no embeddings -> nothing to search -> no answers —
+even though the generation quota was completely untouched.
+
+Embeddings were moved to a HuggingFace-hosted sentence-transformer instead
+(free, separate rate limit, no shared quota with generation), so the two
+steps now fail independently rather than one quota outage taking the whole
+pipeline down. Generation stays on Gemini (`gemini-2.5-flash`), since that
+wasn't the bottleneck.
 """
 
 import time
@@ -19,10 +34,11 @@ import hashlib
 import numpy as np
 import faiss
 from google import genai
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 
 
 class RAGEngine:
-    EMBED_MODEL = "gemini-embedding-001"
+    EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
     GEN_MODEL = "gemini-2.5-flash"
 
     # Tabular data (csv/xlsx) is kept in larger, less-overlapping chunks so that
@@ -34,10 +50,21 @@ class RAGEngine:
         "default": (800, 100),
     }
 
-    def __init__(self, api_key: str):
-        if not api_key:
-            raise ValueError("A Google API key is required to initialize RAGEngine.")
-        self.client = genai.Client(api_key=api_key)
+    def __init__(self, google_api_key: str, hf_token: str):
+        if not google_api_key:
+            raise ValueError(
+                "A Google API key is required to initialize RAGEngine (used for answer generation)."
+            )
+        if not hf_token:
+            raise ValueError(
+                "A HuggingFace token is required to initialize RAGEngine (used for embeddings)."
+            )
+
+        self.client = genai.Client(api_key=google_api_key)
+        self.embedder = HuggingFaceEndpointEmbeddings(
+            model=self.EMBED_MODEL,
+            huggingfacehub_api_token=hf_token,
+        )
         self.chunks = []
         self.index = None
         self.embeddings = None
@@ -69,14 +96,13 @@ class RAGEngine:
     # Embedding
     # ------------------------------------------------------------------ #
     def _embed_single(self, text: str, max_retries: int = 3, retry_wait: float = 8.0):
+        """Embeds one chunk/query via the HuggingFace endpoint, retrying on
+        transient failures (kept from the original Gemini implementation —
+        the retry pattern itself didn't need to change, just the client)."""
         last_error = None
         for attempt in range(max_retries):
             try:
-                result = self.client.models.embed_content(
-                    model=self.EMBED_MODEL,
-                    contents=text,
-                )
-                return result.embeddings[0].values
+                return self.embedder.embed_query(text)
             except Exception as e:  # noqa: BLE001 - want to retry on any transient API error
                 last_error = e
                 if attempt < max_retries - 1:
