@@ -6,6 +6,10 @@ DocuChat AI — chat with your documents using Retrieval-Augmented Generation.
 Streamlit front-end wired to rag_engine.RAGEngine. Handles file upload,
 chunking + embedding (cached per file so re-asking questions is instant),
 a chat-style Q&A interface, and transparent "sources used" for every answer.
+
+Note: embeddings run on a HuggingFace sentence-transformer and generation
+runs on Gemini — two separate API keys, two separate quotas. See
+rag_engine.py for why they were split.
 """
 
 import os
@@ -30,16 +34,16 @@ MAX_CHUNKS_WARNING = 300  # warn if a document will require this many embedding 
 # --------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------- #
-def get_api_key() -> str | None:
-    """Look for the API key in Streamlit secrets first (used on Streamlit
-    Cloud), then fall back to an environment variable (used locally)."""
+def get_key(name: str) -> str | None:
+    """Look for a key in Streamlit secrets first (used on Streamlit Cloud),
+    then fall back to an environment variable (used locally)."""
     key = None
     try:
-        key = st.secrets.get("GOOGLE_API_KEY")
+        key = st.secrets.get(name)
     except Exception:
         key = None
     if not key:
-        key = os.environ.get("GOOGLE_API_KEY")
+        key = os.environ.get(name)
     return key
 
 
@@ -77,13 +81,22 @@ with st.sidebar:
     st.markdown("## 📄 DocuChat AI")
     st.caption("Retrieval-Augmented Generation over your own documents")
 
-    api_key = get_api_key()
-    if api_key:
-        st.success("API key loaded", icon="✅")
+    google_api_key = get_key("GOOGLE_API_KEY")
+    hf_token = get_key("HF_TOKEN")
+
+    if google_api_key:
+        st.success("Google API key loaded", icon="✅")
     else:
-        st.error("No GOOGLE_API_KEY found", icon="⚠️")
+        st.error("Missing GOOGLE_API_KEY", icon="⚠️")
+
+    if hf_token:
+        st.success("HuggingFace token loaded", icon="✅")
+    else:
+        st.error("Missing HF_TOKEN", icon="⚠️")
+
+    if not (google_api_key and hf_token):
         st.caption(
-            "Add it to `.streamlit/secrets.toml` locally, or under "
+            "Add both to `.streamlit/secrets.toml` locally, or under "
             "**App settings → Secrets** on Streamlit Cloud."
         )
 
@@ -104,7 +117,7 @@ with st.sidebar:
         st.markdown(
             """
 1. **Chunking** — your document is split into overlapping text windows.
-2. **Embedding** — each chunk is converted into a vector (`gemini-embedding-001`).
+2. **Embedding** — each chunk is converted into a vector (`all-MiniLM-L6-v2`, via HuggingFace).
 3. **Indexing** — vectors are stored in a FAISS similarity index.
 4. **Retrieval** — your question is embedded and matched against the top-k
    closest chunks.
@@ -118,14 +131,17 @@ with st.sidebar:
 - This tool retrieves the **most relevant chunks**, not the entire file —
   it's built for *"look up this specific fact"* questions, not
   *"count/aggregate across every row"* questions.
-- Very large files are billed and processed chunk-by-chunk, so processing
-  time scales with document size.
+- Very large files are processed chunk-by-chunk, so processing time scales
+  with document size.
 - Answers are only as accurate as the source document and the retrieved chunks.
+- Embeddings and generation run on two separate free-tier services
+  (HuggingFace and Gemini) specifically so that one running out of quota
+  doesn't take down the other.
             """
         )
 
     st.divider()
-    st.caption("Built with Streamlit · FAISS · Google Gemini")
+    st.caption("Built with Streamlit · FAISS · HuggingFace · Gemini")
     st.caption("[View source on GitHub](https://github.com/HananAIBuilds/docuchat-ai/tree/main)")
 
 # --------------------------------------------------------------------- #
@@ -137,7 +153,7 @@ st.markdown(
     "strictly in your file's content, with sources shown for every response."
 )
 
-if not api_key:
+if not (google_api_key and hf_token):
     st.stop()
 
 # --------------------------------------------------------------------- #
@@ -170,7 +186,7 @@ if uploaded_file is not None:
             if len(chunks) > MAX_CHUNKS_WARNING:
                 st.warning(
                     f"This document will generate **{len(chunks)} chunks** "
-                    f"(one embedding API call each). This may take a while — consider "
+                    f"(one embedding call each). This may take a while — consider "
                     f"trimming the file if this is unexpected."
                 )
 
@@ -179,7 +195,7 @@ if uploaded_file is not None:
             def _progress(frac):
                 progress_bar.progress(frac, text=f"Generating embeddings... {int(frac * 100)}%")
 
-            engine = RAGEngine(api_key)
+            engine = RAGEngine(google_api_key, hf_token)
             engine.build_index(chunks, progress_callback=_progress)
             progress_bar.empty()
 
