@@ -35,7 +35,6 @@ import numpy as np
 import faiss
 from google import genai
 from langchain_huggingface import HuggingFaceEndpointEmbeddings
-from langchain_huggingface import HuggingFaceEmbeddings
 
 
 class RAGEngine:
@@ -62,13 +61,10 @@ class RAGEngine:
             )
 
         self.client = genai.Client(api_key=google_api_key)
-        self.embedder = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        self.embedder = HuggingFaceEndpointEmbeddings(
+            model=self.EMBED_MODEL,
+            huggingfacehub_api_token=hf_token,
         )
-        # self.embedder = HuggingFaceEndpointEmbeddings(
-        #     model=self.EMBED_MODEL,
-        #     huggingfacehub_api_token=hf_token,
-        # )
         self.chunks = []
         self.index = None
         self.embeddings = None
