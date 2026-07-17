@@ -1,15 +1,14 @@
 """
 app.py
 ------
-DocuChat AI — chat with your documents using Retrieval-Augmented Generation.
+DocuChat AI - chat with your documents using Retrieval-Augmented Generation.
 
 Streamlit front-end wired to rag_engine.RAGEngine. Handles file upload,
 chunking + embedding (cached per file so re-asking questions is instant),
 a chat-style Q&A interface, and transparent "sources used" for every answer.
 
-Note: embeddings run on a HuggingFace sentence-transformer and generation
-runs on Gemini — two separate API keys, two separate quotas. See
-rag_engine.py for why they were split.
+Note: embeddings run locally via sentence-transformers (no API key needed).
+Only a Google API key is required, for answer generation.
 """
 
 import os
@@ -22,7 +21,7 @@ from rag_engine import RAGEngine, compute_file_hash
 # Page config
 # --------------------------------------------------------------------- #
 st.set_page_config(
-    page_title="DocuChat AI — RAG File Q&A",
+    page_title="DocuChat AI - RAG File Q&A",
     page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -82,21 +81,13 @@ with st.sidebar:
     st.caption("Retrieval-Augmented Generation over your own documents")
 
     google_api_key = get_key("GOOGLE_API_KEY")
-    hf_token = get_key("HF_TOKEN")
 
     if google_api_key:
         st.success("Google API key loaded", icon="✅")
     else:
         st.error("Missing GOOGLE_API_KEY", icon="⚠️")
-
-    if hf_token:
-        st.success("HuggingFace token loaded", icon="✅")
-    else:
-        st.error("Missing HF_TOKEN", icon="⚠️")
-
-    if not (google_api_key and hf_token):
         st.caption(
-            "Add both to `.streamlit/secrets.toml` locally, or under "
+            "Add it to `.streamlit/secrets.toml` locally, or under "
             "**App settings → Secrets** on Streamlit Cloud."
         )
 
@@ -116,32 +107,31 @@ with st.sidebar:
     with st.expander("ℹ️ How this works"):
         st.markdown(
             """
-1. **Chunking** — your document is split into overlapping text windows.
-2. **Embedding** — each chunk is converted into a vector (`all-MiniLM-L6-v2`, via HuggingFace).
-3. **Indexing** — vectors are stored in a FAISS similarity index.
-4. **Retrieval** — your question is embedded and matched against the top-k
+1. **Chunking** - your document is split into overlapping text windows.
+2. **Embedding** - each chunk is converted into a vector **locally** (`all-MiniLM-L6-v2`, no external API call).
+3. **Indexing** - vectors are stored in a FAISS similarity index.
+4. **Retrieval** - your question is embedded and matched against the top-k
    closest chunks.
-5. **Generation** — `gemini-2.5-flash` answers using only those chunks as context.
+5. **Generation** - `gemini-2.5-flash` answers using only those chunks as context.
             """
         )
 
     with st.expander("⚠️ Limitations"):
         st.markdown(
             """
-- This tool retrieves the **most relevant chunks**, not the entire file —
+- This tool retrieves the **most relevant chunks**, not the entire file,
   it's built for *"look up this specific fact"* questions, not
   *"count/aggregate across every row"* questions.
 - Very large files are processed chunk-by-chunk, so processing time scales
   with document size.
 - Answers are only as accurate as the source document and the retrieved chunks.
-- Embeddings and generation run on two separate free-tier services
-  (HuggingFace and Gemini) specifically so that one running out of quota
-  doesn't take down the other.
+- Embeddings run locally on-device specifically to avoid depending on an
+  external embedding API mid-conversation, see the README for why.
             """
         )
 
     st.divider()
-    st.caption("Built with Streamlit · FAISS · HuggingFace · Gemini")
+    st.caption("Built with Streamlit · FAISS · sentence-transformers · Gemini")
     st.caption("[View source on GitHub](https://github.com/HananAIBuilds/docuchat-ai/tree/main)")
 
 # --------------------------------------------------------------------- #
@@ -149,11 +139,11 @@ with st.sidebar:
 # --------------------------------------------------------------------- #
 st.title("📄 DocuChat AI")
 st.markdown(
-    "Upload a document and ask questions about it — answers are grounded "
+    "Upload a document and ask questions about it, answers are grounded "
     "strictly in your file's content, with sources shown for every response."
 )
 
-if not (google_api_key and hf_token):
+if not google_api_key:
     st.stop()
 
 # --------------------------------------------------------------------- #
@@ -186,7 +176,7 @@ if uploaded_file is not None:
             if len(chunks) > MAX_CHUNKS_WARNING:
                 st.warning(
                     f"This document will generate **{len(chunks)} chunks** "
-                    f"(one embedding call each). This may take a while — consider "
+                    f"(one embedding call each). This may take a while, consider "
                     f"trimming the file if this is unexpected."
                 )
 
@@ -195,7 +185,7 @@ if uploaded_file is not None:
             def _progress(frac):
                 progress_bar.progress(frac, text=f"Generating embeddings... {int(frac * 100)}%")
 
-            engine = RAGEngine(google_api_key, hf_token)
+            engine = RAGEngine(google_api_key)
             engine.build_index(chunks, progress_callback=_progress)
             progress_bar.empty()
 
@@ -218,7 +208,7 @@ if uploaded_file is not None:
     else:
         st.info(
             f"**{st.session_state.file_name}** is already loaded "
-            f"({st.session_state.num_chunks} chunks) — ask away below.",
+            f"({st.session_state.num_chunks} chunks) - ask away below.",
             icon="✅",
         )
 
