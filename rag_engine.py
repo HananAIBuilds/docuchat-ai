@@ -5,28 +5,38 @@ Core Retrieval-Augmented Generation engine.
 
 Pipeline:
     1. Chunking      -> split raw text into overlapping windows
-    2. Embedding     -> HuggingFace sentence-transformer, with retry-on-failure
+    2. Embedding     -> local sentence-transformer, with retry-on-failure
     3. Indexing      -> FAISS flat L2 index (in-memory vector store)
     4. Retrieval     -> top-k nearest chunks for a query
     5. Generation    -> Gemini generation model, grounded on retrieved chunks
 
-This module has zero Streamlit imports on purpose — it can be reused in a
+This module has zero Streamlit imports on purpose, it can be reused in a
 CLI, a notebook, or a different UI framework without modification.
 
 Embedding provider note (read before touching the embedding step):
-This originally used Gemini's own embedding model (`gemini-embedding-001`)
-for both embeddings and generation, sharing one Google API key/quota. In
-production, embeddings burn through that quota far faster than generation
-does — every chunk of every uploaded document needs its own embedding call,
-on top of one more call per question asked. Once that quota was exhausted,
-the entire app stalled: no embeddings -> nothing to search -> no answers —
-even though the generation quota was completely untouched.
+This went through two embedding providers before landing here. It started
+on Gemini's own embedding model, sharing one Google API key/quota with
+generation — every chunk of every uploaded document needs its own embedding
+call, so that quota got exhausted fast, and once it did, the whole app
+stalled (no embeddings -> nothing to search -> no answers).
 
-Embeddings were moved to a HuggingFace-hosted sentence-transformer instead
-(free, separate rate limit, no shared quota with generation), so the two
-steps now fail independently rather than one quota outage taking the whole
-pipeline down. Generation stays on Gemini (`gemini-2.5-flash`), since that
-wasn't the bottleneck.
+The first fix moved embeddings to HuggingFace's hosted Inference API
+(`HuggingFaceEndpointEmbeddings`), which solved the shared-quota problem but
+introduced a new one: that hosted endpoint intermittently returns `504`
+(server busy/timeout) errors under load. Not constant, but frequent enough
+that a live deployment could hit it at any moment, with a real visitor
+watching it fail mid-request. That's a fine risk for a local script (just
+re-run it) but not for a deployed app.
+
+Embeddings now run locally via `sentence-transformers`
+(`HuggingFaceEmbeddings`) instead — the model downloads once into the app's
+environment, and every embedding call after that runs on-device with no
+external API call and nothing to time out, rate-limit, or exhaust a quota
+on. No HuggingFace token is needed anymore either. The trade-off is a
+slightly longer cold start on first load and a small, fixed memory
+footprint (~90MB for all-MiniLM-L6-v2), both fine at this project's scale.
+Generation stays on Gemini (`gemini-2.5-flash`), since that was never the
+bottleneck.
 """
 
 import time
@@ -34,7 +44,7 @@ import hashlib
 import numpy as np
 import faiss
 from google import genai
-from langchain_huggingface import HuggingFaceEndpointEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 
 
 class RAGEngine:
@@ -50,21 +60,14 @@ class RAGEngine:
         "default": (800, 100),
     }
 
-    def __init__(self, google_api_key: str, hf_token: str):
+    def __init__(self, google_api_key: str):
         if not google_api_key:
             raise ValueError(
                 "A Google API key is required to initialize RAGEngine (used for answer generation)."
             )
-        if not hf_token:
-            raise ValueError(
-                "A HuggingFace token is required to initialize RAGEngine (used for embeddings)."
-            )
 
         self.client = genai.Client(api_key=google_api_key)
-        self.embedder = HuggingFaceEndpointEmbeddings(
-            model=self.EMBED_MODEL,
-            huggingfacehub_api_token=hf_token,
-        )
+        self.embedder = HuggingFaceEmbeddings(model_name=self.EMBED_MODEL)
         self.chunks = []
         self.index = None
         self.embeddings = None
@@ -96,14 +99,14 @@ class RAGEngine:
     # Embedding
     # ------------------------------------------------------------------ #
     def _embed_single(self, text: str, max_retries: int = 3, retry_wait: float = 8.0):
-        """Embeds one chunk/query via the HuggingFace endpoint, retrying on
-        transient failures (kept from the original Gemini implementation —
-        the retry pattern itself didn't need to change, just the client)."""
+        """Embeds one chunk/query locally. Retry logic is kept even though
+        local inference has nothing to rate-limit, a transient failure
+        (e.g. first-load model download hiccup) is still worth retrying."""
         last_error = None
         for attempt in range(max_retries):
             try:
                 return self.embedder.embed_query(text)
-            except Exception as e:  # noqa: BLE001 - want to retry on any transient API error
+            except Exception as e:  # noqa: BLE001 - want to retry on any transient error
                 last_error = e
                 if attempt < max_retries - 1:
                     time.sleep(retry_wait)
@@ -116,7 +119,7 @@ class RAGEngine:
         used by the UI to drive a progress bar.
         """
         if not chunks:
-            raise ValueError("No chunks to index — the document may be empty.")
+            raise ValueError("No chunks to index, the document may be empty.")
 
         embeddings = []
         total = len(chunks)
@@ -141,7 +144,7 @@ class RAGEngine:
     # ------------------------------------------------------------------ #
     def search(self, query: str, k: int = 5):
         if self.index is None:
-            raise RuntimeError("Index has not been built yet — process a document first.")
+            raise RuntimeError("Index has not been built yet, process a document first.")
 
         query_embedding = self._embed_single(query)
         query_array = np.array([query_embedding]).astype("float32")
