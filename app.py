@@ -8,7 +8,8 @@ chunking + embedding (cached per file so re-asking questions is instant),
 a chat-style Q&A interface, and transparent "sources used" for every answer.
 
 Note: embeddings run locally via sentence-transformers (no API key needed).
-Only a Google API key is required, for answer generation.
+A Google API key is required for answer generation, and an optional Groq
+API key can be set as an automatic fallback if Gemini's quota is exhausted.
 """
 
 import os
@@ -29,9 +30,8 @@ st.set_page_config(
 
 MAX_CHUNKS_WARNING = 300  # warn if a document will require this many embedding calls
 
-
 # --------------------------------------------------------------------- #
-# Helpers
+#                              Helpers                                  #
 # --------------------------------------------------------------------- #
 def get_key(name: str) -> str | None:
     """Look for a key in Streamlit secrets first (used on Streamlit Cloud),
@@ -74,13 +74,14 @@ def reset_document():
 init_session_state()
 
 # --------------------------------------------------------------------- #
-# Sidebar
+#                               Sidebar                                 #
 # --------------------------------------------------------------------- #
 with st.sidebar:
     st.markdown("## 📄 DocuChat AI")
     st.caption("Retrieval-Augmented Generation over your own documents")
 
     google_api_key = get_key("GOOGLE_API_KEY")
+    groq_api_key = get_key("GROQ_API_KEY")
 
     if google_api_key:
         st.success("Google API key loaded", icon="✅")
@@ -89,6 +90,15 @@ with st.sidebar:
         st.caption(
             "Add it to `.streamlit/secrets.toml` locally, or under "
             "**App settings → Secrets** on Streamlit Cloud."
+        )
+
+    if groq_api_key:
+        st.success("Groq API key loaded (fallback enabled)", icon="✅")
+    else:
+        st.info(
+            "No GROQ_API_KEY set, if Gemini's quota runs out mid-chat, "
+            "answers will pause instead of automatically falling back.",
+            icon="ℹ️",
         )
 
     st.divider()
@@ -112,8 +122,9 @@ with st.sidebar:
 3. **Indexing** - vectors are stored in a FAISS similarity index.
 4. **Retrieval** - your question is embedded and matched against the top-k
    closest chunks.
-5. **Generation** - `gemini-2.5-flash` answers using only those chunks as context.
-            """
+5. **Generation** - `gemini-2.5-flash` answers using only those chunks as context,
+   automatically falling back to Groq's `llama-3.1-8b-instant` if Gemini is unavailable.
+"""
         )
 
     with st.expander("⚠️ Limitations"):
@@ -127,15 +138,17 @@ with st.sidebar:
 - Answers are only as accurate as the source document and the retrieved chunks.
 - Embeddings run locally on-device specifically to avoid depending on an
   external embedding API mid-conversation, see the README for why.
-            """
+- Generation depends on Gemini's free-tier quota; adding a Groq API key
+  enables automatic fallback so the chat keeps working if that quota is hit.
+"""
         )
 
     st.divider()
-    st.caption("Built with Streamlit · FAISS · sentence-transformers · Gemini")
+    st.caption("Built with Streamlit · FAISS · sentence-transformers · Gemini · Groq")
     st.caption("[View source on GitHub](https://github.com/HananAIBuilds/docuchat-ai/tree/main)")
 
 # --------------------------------------------------------------------- #
-# Main header
+#                           Main header                                 #
 # --------------------------------------------------------------------- #
 st.title("📄 DocuChat AI")
 st.markdown(
@@ -147,7 +160,7 @@ if not google_api_key:
     st.stop()
 
 # --------------------------------------------------------------------- #
-# File upload + processing
+#                   File upload + processing                            #
 # --------------------------------------------------------------------- #
 uploaded_file = st.file_uploader(
     "Upload a document",
@@ -185,7 +198,7 @@ if uploaded_file is not None:
             def _progress(frac):
                 progress_bar.progress(frac, text=f"Generating embeddings... {int(frac * 100)}%")
 
-            engine = RAGEngine(google_api_key)
+            engine = RAGEngine(google_api_key, groq_api_key)
             engine.build_index(chunks, progress_callback=_progress)
             progress_bar.empty()
 
@@ -199,6 +212,7 @@ if uploaded_file is not None:
                 f"**{uploaded_file.name}** processed into "
                 f"**{len(chunks)} chunks** and ready for questions."
             )
+
         except ValueError as e:
             st.error(str(e))
             st.stop()
@@ -213,7 +227,7 @@ if uploaded_file is not None:
         )
 
 # --------------------------------------------------------------------- #
-# Chat interface
+#                           Chat interface                              #
 # --------------------------------------------------------------------- #
 if st.session_state.engine is not None:
     col1, col2 = st.columns([5, 1])
@@ -261,5 +275,6 @@ if st.session_state.engine is not None:
         st.session_state.messages.append(
             {"role": "assistant", "content": answer, "sources": sources}
         )
+
 else:
     st.info("👆 Upload a document above to start asking questions.")
